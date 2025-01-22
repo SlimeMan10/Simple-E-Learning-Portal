@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="../static/TS/index.js" defer></script>
+    <link rel="stylesheet" href="../static/css/styles.css">
+    <title>Log In Page</title>
+</head>
+<body>
+    <header></header>
+    <main>
+        <div id="log-in-option">
+            <h1>Choose log in type</h1>
+            <button id="admin-btn">Admin</button>
+            <button id="student-btn">Student</button>
+            <button id="teacher-btn">Teacher</button>
+            <button id="create-btn">Create Account</button>
+        </div>
+
+        <div id="teacher-stuff" class="hidden">
+            <h2>Teacher Dashboard</h2>
+            <div id="teacher-classes" class="hidden">
+                <!-- Classes for teachers -->
+            </div>
+            <div id="students-in-class" class="hidden">
+                <!-- Students in class -->
+            </div>
+        </div>
+
+        <div id="student-stuff" class="hidden">
+            <h2>Student Dashboard</h2>
+            <div id="student-classes" class="hidden"></div>
+            <div id="student-add-class" class="hidden"></div>
+            <div id="student-drop-class" class="hidden"></div>
+        </div>
+
+        <div id="admin-stuff" class="hidden">
+            <h2>Admin Dashboard</h2>
+            <div id="admin-add-new-class" class="hidden"></div>
+            <div id="admin-approve-add" class="hidden"></div>
+            <div id="admin-approve-drop" class="hidden"></div>
+        </div>
+    </main>
+    <footer></footer>
+</body>
+</html>

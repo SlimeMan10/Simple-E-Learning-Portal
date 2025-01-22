@@ -1,11 +1,16 @@
 {
     "compilerOptions": {
-        "removeComments": false,
-        "noEmitOnError": false,
-        "target": "ES6",
-        "module": "ES6",
-        "strict": true
+        "removeComments": false,           // Preserve comments in the compiled output
+        "noEmitOnError": true,             // Prevent emitting files if there are TypeScript errors
+        "target": "ES6",                   // Compile to ES6 syntax
+        "module": "ES6",                   // Use ES6 module syntax
+        "moduleResolution": "node",       // Resolve modules in Node.js style
+        "strict": true,                    // Enable all strict type checking options
+        "outDir": "./dist",                // Output directory for compiled JavaScript
+        "rootDir": "./src",                // Root directory for source TypeScript files
+        "esModuleInterop": true,          // Allow interoperation with CommonJS modules
+        "forceConsistentCasingInFileNames": true // Ensure consistent file naming
     },
-    "include": ["**/*.ts"],
-    "exclude": ["node_modules"]
+    "include": ["src/**/*.ts"],            // Include all TypeScript files in the "src" folder
+    "exclude": ["node_modules"]            // Exclude dependencies
 }
