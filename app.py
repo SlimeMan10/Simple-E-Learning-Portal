@@ -37,8 +37,6 @@ def __closeConnection(conn, cursor):
     if conn:
         conn.close()
 
-#TODO: Endpoint for all
-
 # Login route
 @app.route("/login", methods=["POST"])
 def login():
@@ -90,11 +88,143 @@ def login():
         __closeConnection(conn, cursor)
 
 #TODO: Admin Endpoints
-#TODO add accept add and accept drop
+@app.route("/acceptClassDrop", methods=["POST"])
+def acceptClassDrop():
+    conn, cursor = None, None
+    try:
+        # Parse request data
+        data = request.json
+        username = data.get("username")
+        studentName = data.get("studentName")
+        classId = data.get("classId")
 
-#TODO accept drop
+        # Validate inputs
+        if not username:
+            return jsonify({"error": "User did not provide username"}), 400
+        if not __checkRole(username, "admin"):
+            return jsonify({"error": "User is not an admin"}), 403
+        if not studentName:
+            return jsonify({"error": "Student name not provided"}), 400
+        if not classId:
+            return jsonify({"error": "Class ID not provided"}), 400
+
+        # Connect to the database
+        conn, cursor = __createConnection()
+
+        # Verify the drop request exists
+        dropRequestQuery = """
+            SELECT 1 FROM dropClasses
+            WHERE classId = ? AND student = ?
+        """
+        cursor.execute(dropRequestQuery, [classId, studentName])
+        dropRequestExists = cursor.fetchone()
+        if not dropRequestExists:
+            return jsonify({"error": "Drop request not found"}), 404
+
+        # Remove the student from StudentSchedule
+        removeStudentQuery = """
+            DELETE FROM StudentSchedule
+            WHERE student = ? AND classId = ?
+        """
+        cursor.execute(removeStudentQuery, [studentName, classId])
+
+        # Update capacity in the Classes table
+        updateCapacityQuery = """
+            UPDATE Classes
+            SET capacity = capacity + 1
+            WHERE id = ?
+        """
+        cursor.execute(updateCapacityQuery, [classId])
+
+        # Delete the drop request from dropClasses
+        deleteDropRequestQuery = """
+            DELETE FROM dropClasses
+            WHERE classId = ? AND student = ?
+        """
+        cursor.execute(deleteDropRequestQuery, [classId, studentName])
+
+        # Commit changes
+        conn.commit()
+
+        return jsonify({"message": "Class drop request successfully processed"}), 200
+
+    except Exception as e:
+        logging.error(f"Error processing class drop request: {e}")
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 #todo accept add
+@app.route("/acceptAddClass", methods=["POST"])
+def acceptAddClass():
+    conn, cursor = None, None
+    try:
+        # Parse request data
+        data = request.json
+        user = data.get("username")
+        studentName = data.get("student_name")
+        classId = data.get("class_id")
+
+        # Validate inputs
+        if not user:
+            return jsonify({"error": "User is not logged in"}), 400
+        if not __checkRole(user, "admin"):
+            return jsonify({"error": "Permission not granted"}), 403
+        if not studentName:
+            return jsonify({"error": "Student name not provided"}), 400
+        if not classId:
+            return jsonify({"error": "Class ID not provided"}), 400
+
+        # Connect to the database
+        conn, cursor = __createConnection()
+
+        # Verify the class has available capacity
+        spaceQuery = """
+            SELECT capacity
+            FROM Classes
+            WHERE id = ? AND capacity > 0
+        """
+        cursor.execute(spaceQuery, [classId])
+        capacity = cursor.fetchone()
+        if not capacity:
+            return jsonify({"error": "Class capacity has been reached"}), 400
+
+        # Insert the student-class relationship into ClassStudents
+        insertQuery = """
+            INSERT INTO ClassStudents (classId, student)
+            VALUES (?, ?)
+        """
+        cursor.execute(insertQuery, [classId, studentName])
+
+        # Decrease the class capacity
+        updateCapacityQuery = """
+            UPDATE Classes
+            SET capacity = capacity - 1
+            WHERE id = ?
+        """
+        cursor.execute(updateCapacityQuery, [classId])
+
+        # Remove the request from addClasses (AddRequests table)
+        removeQuery = """
+            DELETE FROM addClasses
+            WHERE classId = ? AND student = ?
+        """
+        cursor.execute(removeQuery, [classId, studentName])
+
+        # Commit the changes
+        conn.commit()
+
+        return jsonify({"status": "Add request successfully processed"}), 200
+
+    except Exception as e:
+        # Rollback in case of an error
+        if conn:
+            conn.rollback()
+        logging.error(f"Error processing add class request: {e}")
+        return jsonify({"error": serverError}), 500
+
+    finally:
+        __closeConnection(conn, cursor)
 
 #todo decline add
 
@@ -108,21 +238,20 @@ def create_user():
     conn, cursor = None, None
     try:
         data = request.json
-        adminUsername = data.get("adminUsername")
+        adminUsername = data.get("username")
         if not adminUsername:
-            return jsonify({"error": "Admin username is required"}), 400
-
-        # Check if the user is an admin
-        user = __checkRole(adminUsername, "admin")
-        if not user:
-            return jsonify({"error": "Admin authentication failed"}), 401
-
+            return jsonify({"error": "no username provides"}), 400
+        if not __checkRole(adminUsername, "admin"):
+            return jsonify({"error": "Permission not granted"}), 400
         # Now we can create the new user
         newUsername = data.get("newUsername")
+        userFullName = data.get("full_name")
         newPassword = data.get("newPassword")
         role = data.get("role")
         if not newUsername:
             return jsonify({"error": "New username is required"}), 400
+        if not userFullName:
+            return jsonify({"error": "Users name is required"}), 400
         if not newPassword:
             return jsonify({"error": "New password is required"}), 400
 
@@ -134,8 +263,8 @@ def create_user():
         salt = __generateSalt()
         hashedPassword = __hashPassword(newPassword, salt)
         conn, cursor = __createConnection()
-        newUserQuery = "INSERT INTO Users (username, salt, hash, role) VALUES (?, ?, ?, ?)"
-        cursor.execute(newUserQuery, [newUsername, salt, hashedPassword, role])
+        newUserQuery = "INSERT INTO Users (username, full_name, salt, hash, role) VALUES (?, ?, ?, ?, ?)"
+        cursor.execute(newUserQuery, [newUsername, userFullName , salt, hashedPassword, role])
         conn.commit()
         return jsonify({"message": "User created successfully"}), 200
 
@@ -183,15 +312,13 @@ def get_drop_class_request():
 
         conn, cursor = __createConnection()
 
-        # Get all drop-class requests filtered by the teacher
+        # Get all drop-class requests
         query = """
         SELECT c.id, c.className, c.classDescription, c.capacity, c.teacher, c.period, d.student 
         FROM dropClasses d
         JOIN Classes c ON d.classId = c.id
-        JOIN TeacherSchedule ts ON ts.classId = c.id
-        WHERE ts.teacher = ?
         """
-        cursor.execute(query, [adminUsername])
+        cursor.execute(query)
         classData = cursor.fetchall()
 
         # Format the data
@@ -227,15 +354,13 @@ def get_add_class_request():
 
         conn, cursor = __createConnection()
 
-        # Get all add-class requests filtered by the teacher
+        # Get all add-class requests
         query = """
         SELECT c.id, c.className, c.classDescription, c.capacity, c.teacher, c.period, a.student 
         FROM addClasses a
         JOIN Classes c ON a.classId = c.id
-        JOIN TeacherSchedule ts ON ts.classId = c.id
-        WHERE ts.teacher = ?
         """
-        cursor.execute(query, [adminUsername])
+        cursor.execute(query)
         classData = cursor.fetchall()
 
         # Format the data
@@ -351,6 +476,47 @@ def get_students_in_class():
 #TODO: Student end points
 
 #TODO make endpoint to view classes taken (view all classes)
+@app.route("/studentGetAllClasses", methods=["GET"])
+def student_get_all_classes():
+    conn, cursor = None, None
+    try:
+        conn, cursor = __createConnection()
+        
+        # Validate username and role
+        data = request.args
+        username = data.get("username")
+        if not username:
+            return jsonify({"error": "User is not signed in"}), 400
+        if not __checkRole(username, "student"):
+            return jsonify({"error": "User is not a student"}), 403
+
+        # Fetch all classes for the student
+        classes_query = """
+        SELECT c.className, c.classDescription, c.teacher 
+        FROM StudentSchedule ss
+        JOIN Classes c ON ss.classId = c.id
+        JOIN Users u ON ss.student = u.full_name
+        WHERE u.username = ?
+        """
+        cursor.execute(classes_query, [username])
+        classes = cursor.fetchall()
+
+        # Format the result
+        if not classes:
+            return jsonify({"Data": [], "message": "No classes found"}), 200
+
+        class_list = [{
+            "Class Name": class_data[0],
+            "Class Description": class_data[1],
+            "Teacher": class_data[2]
+        } for class_data in classes]
+
+        return jsonify({"Data": class_list}), 200
+    except Exception as e:
+        logging.error(f"Error fetching classes for student: {e}")
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 #Todo if they select the class it should give the teacher and class description (clicking card)
 
