@@ -74,7 +74,7 @@ def login():
         input_hash = __hashPassword(password, stored_salt)
 
         # Compare the computed hash with the stored hash
-        if input_hash != stored_hash:
+        if not secrets.compare_digest(input_hash, stored_hash):
             return jsonify({"error": logInError}), 401
 
         # If login is successful
@@ -88,68 +88,67 @@ def login():
         __closeConnection(conn, cursor)
 
 #TODO: Admin Endpoints
+
+#TODO: Write this
+@app.route("/addNewClass", methods=["POST"])
+def addNewClass():
+
+@app.route("/deleteClass", methods=["POST"])
+def deleteClass():
+
+
 @app.route("/acceptClassDrop", methods=["POST"])
 def acceptClassDrop():
     conn, cursor = None, None
     try:
-        # Parse request data
         data = request.json
         username = data.get("username")
         studentName = data.get("studentName")
         classId = data.get("classId")
 
-        # Validate inputs
-        if not username:
-            return jsonify({"error": "User did not provide username"}), 400
+        if not all([username, studentName, classId]):
+            return jsonify({"error": "Missing required fields"}), 400
+
         if not __checkRole(username, "admin"):
-            return jsonify({"error": "User is not an admin"}), 403
-        if not studentName:
-            return jsonify({"error": "Student name not provided"}), 400
-        if not classId:
-            return jsonify({"error": "Class ID not provided"}), 400
+            return jsonify({"error": "Permission denied"}), 403
 
-        # Connect to the database
         conn, cursor = __createConnection()
+        conn.execute("BEGIN TRANSACTION")
 
-        # Verify the drop request exists
-        dropRequestQuery = """
-            SELECT 1 FROM dropClasses
+        # Verify drop request exists
+        cursor.execute("""
+            SELECT 1 FROM DropRequests
             WHERE classId = ? AND student = ?
-        """
-        cursor.execute(dropRequestQuery, [classId, studentName])
-        dropRequestExists = cursor.fetchone()
-        if not dropRequestExists:
+        """, [classId, studentName])
+        if not cursor.fetchone():
+            conn.rollback()
             return jsonify({"error": "Drop request not found"}), 404
 
-        # Remove the student from StudentSchedule
-        removeStudentQuery = """
-            DELETE FROM StudentSchedule
-            WHERE student = ? AND classId = ?
-        """
-        cursor.execute(removeStudentQuery, [studentName, classId])
-
-        # Update capacity in the Classes table
-        updateCapacityQuery = """
-            UPDATE Classes
-            SET capacity = capacity + 1
-            WHERE id = ?
-        """
-        cursor.execute(updateCapacityQuery, [classId])
-
-        # Delete the drop request from dropClasses
-        deleteDropRequestQuery = """
-            DELETE FROM dropClasses
+        # Remove from ClassStudents
+        cursor.execute("""
+            DELETE FROM ClassStudents
             WHERE classId = ? AND student = ?
-        """
-        cursor.execute(deleteDropRequestQuery, [classId, studentName])
+        """, [classId, studentName])
 
-        # Commit changes
+        # Update capacity
+        cursor.execute("""
+            UPDATE Classes 
+            SET capacity = capacity + 1 
+            WHERE id = ?
+        """, [classId])
+
+        # Remove from DropRequests
+        cursor.execute("""
+            DELETE FROM DropRequests 
+            WHERE classId = ? AND student = ?
+        """, [classId, studentName])
+
         conn.commit()
-
-        return jsonify({"message": "Class drop request successfully processed"}), 200
+        return jsonify({"message": "Drop request processed"}), 200
 
     except Exception as e:
-        logging.error(f"Error processing class drop request: {e}")
+        logging.error(f"Drop error: {e}")
+        conn.rollback() if conn else None
         return jsonify({"error": serverError}), 500
     finally:
         __closeConnection(conn, cursor)
@@ -159,78 +158,68 @@ def acceptClassDrop():
 def acceptAddClass():
     conn, cursor = None, None
     try:
-        # Parse request data
         data = request.json
-        user = data.get("username")
+        username = data.get("username")
         studentName = data.get("student_name")
         classId = data.get("class_id")
 
-        # Validate inputs
-        if not user:
-            return jsonify({"error": "User is not logged in"}), 400
-        if not __checkRole(user, "admin"):
-            return jsonify({"error": "Permission not granted"}), 403
-        if not studentName:
-            return jsonify({"error": "Student name not provided"}), 400
-        if not classId:
-            return jsonify({"error": "Class ID not provided"}), 400
+        if not all([username, studentName, classId]):
+            return jsonify({"error": "Missing required fields"}), 400
 
-        # Connect to the database
+        if not __checkRole(username, "admin"):
+            return jsonify({"error": "Permission denied"}), 403
+
         conn, cursor = __createConnection()
+        conn.execute("BEGIN TRANSACTION")
 
-        # Verify the class has available capacity
-        spaceQuery = """
-            SELECT capacity
-            FROM Classes
-            WHERE id = ? AND capacity > 0
-        """
-        cursor.execute(spaceQuery, [classId])
+        # Check capacity
+        cursor.execute("SELECT capacity FROM Classes WHERE id = ?", [classId])
         capacity = cursor.fetchone()
-        if not capacity:
-            return jsonify({"error": "Class capacity has been reached"}), 400
+        if not capacity or capacity[0] < 1:
+            conn.rollback()
+            return jsonify({"error": "Class is full"}), 400
 
-        # Insert the student-class relationship into ClassStudents
-        insertQuery = """
+        # Add to ClassStudents
+        cursor.execute("""
             INSERT INTO ClassStudents (classId, student)
             VALUES (?, ?)
-        """
-        cursor.execute(insertQuery, [classId, studentName])
+        """, [classId, studentName])
 
-        # Decrease the class capacity
-        updateCapacityQuery = """
-            UPDATE Classes
-            SET capacity = capacity - 1
+        # Update capacity
+        cursor.execute("""
+            UPDATE Classes 
+            SET capacity = capacity - 1 
             WHERE id = ?
-        """
-        cursor.execute(updateCapacityQuery, [classId])
+        """, [classId])
 
-        # Remove the request from addClasses (AddRequests table)
-        removeQuery = """
-            DELETE FROM addClasses
+        # Remove from AddRequests
+        cursor.execute("""
+            DELETE FROM AddRequests 
             WHERE classId = ? AND student = ?
-        """
-        cursor.execute(removeQuery, [classId, studentName])
+        """, [classId, studentName])
 
-        # Commit the changes
         conn.commit()
-
-        return jsonify({"status": "Add request successfully processed"}), 200
+        return jsonify({"message": "Add request processed"}), 200
 
     except Exception as e:
-        # Rollback in case of an error
-        if conn:
-            conn.rollback()
-        logging.error(f"Error processing add class request: {e}")
+        logging.error(f"Add error: {e}")
+        conn.rollback() if conn else None
         return jsonify({"error": serverError}), 500
-
     finally:
         __closeConnection(conn, cursor)
 
 #todo decline add
+@app.route("/declineAdd", methods=["POST"])
+def declineAdd():
+
 
 #todo decline drop
+@app.route("/declineDrop", methods=["POST"])
+def declineDrop():
 
 #todo add role
+@app.route("/addRole", methods=["POST"])
+def addRole():
 
 # Create new user (for admin)
 @app.route("/createUser", methods=["POST"])
@@ -315,7 +304,7 @@ def get_drop_class_request():
         # Get all drop-class requests
         query = """
         SELECT c.id, c.className, c.classDescription, c.capacity, c.teacher, c.period, d.student 
-        FROM dropClasses d
+        FROM DropClasses d
         JOIN Classes c ON d.classId = c.id
         """
         cursor.execute(query)
@@ -427,48 +416,37 @@ def get_all_classes_teacher():
 def get_students_in_class():
     conn, cursor = None, None
     try:
+        currentUser = request.args.get("username")
+        classId = request.args.get("id")
+        
+        if not currentUser or not classId:
+            return jsonify({"error": "Missing parameters"}), 400
+
+        if not __checkRole(currentUser, "teacher"):
+            return jsonify({"error": "Permission denied"}), 403
+
         conn, cursor = __createConnection()
 
-        # Parse query parameters
-        data = request.args
-        currentUser = data.get("username")
-        classId = data.get("id")
+        # Verify teacher assignment
+        cursor.execute("""
+            SELECT 1 FROM TeacherSchedule 
+            WHERE teacher = ? AND classId = ?
+        """, [currentUser, classId])
+        if not cursor.fetchone():
+            return jsonify({"error": "Not assigned to class"}), 403
 
-        # Validate inputs
-        if not currentUser:
-            return jsonify({"error": "User is not logged in"}), 400
-        if not classId:
-            return jsonify({"error": "Class ID is required"}), 400
-
-        # Check if the user is a teacher
-        if not __checkRole(currentUser, "teacher"):
-            return jsonify({"error": "You are not authorized to access this resource"}), 403
-
-        # Verify if the teacher is assigned to the class
-        validation_query = """
-        SELECT id FROM TeacherSchedule 
-        WHERE teacher = ? AND classId = ?
-        """
-        cursor.execute(validation_query, [currentUser, classId])
-        assignment = cursor.fetchone()
-        if not assignment:
-            return jsonify({"error": "You are not assigned to this class"}), 403
-
-        # Fetch students in the class
-        student_query = """
-        SELECT student 
-        FROM Classes 
-        WHERE id = ?
-        """
-        cursor.execute(student_query, [classId])
-        students = cursor.fetchall()
-
-        # Format the result
-        result = [{"Student Name": row[0]} for row in students]
-        return jsonify({"Students": result}), 200
+        # Get students
+        cursor.execute("""
+            SELECT student FROM ClassStudents 
+            WHERE classId = ?
+        """, [classId])
+        
+        return jsonify({
+            "students": [row[0] for row in cursor.fetchall()]
+        }), 200
 
     except Exception as e:
-        logging.error(f"Error fetching students in class: {e}")
+        logging.error(f"Student list error: {e}")
         return jsonify({"error": serverError}), 500
     finally:
         __closeConnection(conn, cursor)
@@ -476,133 +454,221 @@ def get_students_in_class():
 #TODO: Student end points
 
 #TODO make endpoint to view classes taken (view all classes)
-@app.route("/studentGetAllClasses", methods=["GET"])
-def student_get_all_classes():
+#can also be used to get all classes to drop
+@app.route("/studentGetAvailableClasses", methods=["GET"])
+def studentGetAvailableClasses():
     conn, cursor = None, None
     try:
+        username = request.args.get("username")
+        if not username or not __checkRole(username, "student"):
+            return jsonify({"error": "Authentication failed"}), 403
+
+        missing_periods = __getMissingPeriods(username)
+        if not missing_periods:
+            return jsonify({"data": []}), 200
+
         conn, cursor = __createConnection()
-        
-        # Validate username and role
-        data = request.args
-        username = data.get("username")
-        if not username:
-            return jsonify({"error": "User is not signed in"}), 400
-        if not __checkRole(username, "student"):
-            return jsonify({"error": "User is not a student"}), 403
+        cursor.execute(f"""
+            SELECT className, classDescription, teacher 
+            FROM Classes
+            WHERE capacity > 0 AND period IN ({','.join(['?']*len(missing_periods))})
+        """, missing_periods)
 
-        # Fetch all classes for the student
-        classes_query = """
-        SELECT c.className, c.classDescription, c.teacher 
-        FROM StudentSchedule ss
-        JOIN Classes c ON ss.classId = c.id
-        JOIN Users u ON ss.student = u.full_name
-        WHERE u.username = ?
-        """
-        cursor.execute(classes_query, [username])
-        classes = cursor.fetchall()
+        return jsonify({
+            "data": [{
+                "name": row[0],
+                "description": row[1],
+                "teacher": row[2]
+            } for row in cursor.fetchall()]
+        }), 200
 
-        # Format the result
-        if not classes:
-            return jsonify({"Data": [], "message": "No classes found"}), 200
-
-        class_list = [{
-            "Class Name": class_data[0],
-            "Class Description": class_data[1],
-            "Teacher": class_data[2]
-        } for class_data in classes]
-
-        return jsonify({"Data": class_list}), 200
     except Exception as e:
-        logging.error(f"Error fetching classes for student: {e}")
+        logging.error(f"Available classes error: {e}")
         return jsonify({"error": serverError}), 500
     finally:
         __closeConnection(conn, cursor)
 
-#Todo if they select the class it should give the teacher and class description (clicking card)
+@app.route("/studentClassInfo", methods=["GET"])
+def studentClassInfo():
+    data = request.args
+    username = data.get("username")
 
-#TODO view all classes to drop
+    # Check if logged in and correct role
+    if not username:
+        return jsonify({"error": "User not signed in"}), 400
+    if not __checkRole(username, "student"):
+        return jsonify({"error": "Permission not granted"}), 403
+
+    # Validate classId
+    classId = data.get("classId")
+    if not classId:
+        return jsonify({"error": "Class ID not provided"}), 400
+
+    conn, cursor = None, None
+    try:
+        # Connect to the database
+        conn, cursor = __createConnection()
+
+        # Query for class information
+        query = """
+            SELECT className, classDescription, teacher
+            FROM Classes
+            WHERE id = ?
+        """
+        cursor.execute(query, [classId])
+        classData = cursor.fetchone()
+
+        # If the class does not exist
+        if not classData:
+            return jsonify({"error": "Class does not exist"}), 404
+
+        # Format and return the response
+        classForm = {
+            "Class Name": classData[0],
+            "Class Description": classData[1],
+            "Teacher": classData[2]
+        }
+        return jsonify({"Data": classForm}), 200
+
+    except Exception as e:
+        logging.error(f"Error fetching class information for student: {e}")
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 #TODO send drop request
+@app.route("/sendDropRequest", methods=["POST"])
+def sendDropRequest():
+    conn, cursor = None, None
+    try:
+        data = request.json
+        username = data.get("username")
+        classId = data.get("classId")
+
+        if not username or not classId:
+            return jsonify({"error": "Missing required fields"}), 400
+
+        if not __checkRole(username, "student"):
+            return jsonify({"error": "Permission denied"}), 403
+
+        conn, cursor = __createConnection()
+
+        # Get full name
+        cursor.execute("SELECT full_name FROM Users WHERE username = ?", [username])
+        if not (full_name := cursor.fetchone()):
+            return jsonify({"error": "User not found"}), 404
+
+        # Check existing request
+        cursor.execute("""
+            SELECT 1 FROM DropRequests 
+            WHERE classId = ? AND student = ?
+        """, [classId, full_name[0]])
+        if cursor.fetchone():
+            return jsonify({"error": "Duplicate request"}), 409
+
+        # Create request
+        cursor.execute("""
+            INSERT INTO DropRequests (classId, student)
+            VALUES (?, ?)
+        """, [classId, full_name[0]])
+
+        conn.commit()
+        return jsonify({"message": "Drop request submitted"}), 200
+
+    except Exception as e:
+        logging.error(f"Drop request error: {e}")
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 
-@app.route("/studentAddRequest", methods=["POST"])
+@app.route("/sendAddRequest", methods=["POST"])
 def studentAddRequest():
     conn, cursor = None, None
     try:
         data = request.json
 
-        # Validate username
-        user = data.get('username')
-        if not user:
-            return jsonify({"error": "User not logged in"}), 400
-        if not __checkRole(user, "student"):
-            return jsonify({"error": logInError}), 400
+        # Validate input
+        username = data.get('username')
+        class_id = data.get("classId")
+        if not username or not class_id:
+            return jsonify({"error": "Missing username or class ID"}), 400
 
-        # Validate classId
-        classId = data.get("classId")
-        if not classId:
-            return jsonify({"error": "classId is required"}), 400
+        if not __checkRole(username, "student"):
+            return jsonify({"error": "Student access required"}), 403  # Proper 403 status
 
         conn, cursor = __createConnection()
 
-        # Check the period for the given classId
-        query = """
-            SELECT period FROM Classes WHERE id = ?
-        """
-        cursor.execute(query, [classId])
-        classData = cursor.fetchone()
-        if not classData:
-            return jsonify({"error": "Invalid classId"}), 400
-        classPeriod = classData[0]
+        # Verify class existence and get details
+        cursor.execute("""
+            SELECT period, capacity, teacher 
+            FROM Classes 
+            WHERE id = ?
+        """, [class_id])
+        class_data = cursor.fetchone()
+        if not class_data:
+            return jsonify({"error": "Invalid class ID"}), 404
 
-        # Get missing periods for the student
-        missingPeriods = __getMissingPeriods(user)  # Ensure this helper function is implemented
-        if classPeriod not in missingPeriods:
-            return jsonify({"error": "Period conflict"}), 400
+        class_period, capacity, teacher = class_data
 
-        # Fetch full_name for the user
-        nameQuery = """
-            SELECT full_name FROM Users WHERE username = ?
-        """
-        cursor.execute(nameQuery, [user])
-        full_name_data = cursor.fetchone()
-        if not full_name_data:
-            return jsonify({"error": "User not found"}), 400
-        full_name = full_name_data[0]
+        # Check class capacity
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM ClassStudents 
+            WHERE classId = ?
+        """, [class_id])
+        enrolled = cursor.fetchone()[0]
+        if enrolled >= capacity:
+            return jsonify({"error": "Class is full"}), 409
 
-        # Insert add request into the addClasses table
-        addQuery = """
-            INSERT INTO addClasses (classId, student) VALUES (?, ?)
-        """
-        cursor.execute(addQuery, [classId, full_name])
+        # Check student availability
+        missing_periods = __getMissingPeriods(username)
+        if class_period not in missing_periods:
+            return jsonify({"error": f"Period {class_period} conflict"}), 409
+
+        # Check existing requests
+        cursor.execute("""
+            SELECT 1 
+            FROM AddRequests 
+            WHERE classId = ? AND student = ?
+        """, [class_id, username])  # Use username instead of full_name
+        if cursor.fetchone():
+            return jsonify({"error": "Duplicate add request"}), 409
+
+        # Insert request
+        cursor.execute("""
+            INSERT INTO AddRequests (classId, student)
+            VALUES (?, ?)
+        """, [class_id, username])  # Store username instead of full_name
+        
         conn.commit()
+        return jsonify({"message": "Add request submitted"}), 200
 
-        return jsonify({"message": "Add Request Successful"}), 200
     except Exception as e:
-        logging.error(f"Error processing add request: {e}")
-        return jsonify({"error": serverError}), 500
+        logging.error(f"Add request error: {str(e)}", exc_info=True)
+        if conn:
+            conn.rollback()
+        return jsonify({"error": "Internal server error"}), 500
     finally:
         __closeConnection(conn, cursor)
 
-def __getMissingPeriods(user):
+def __getMissingPeriods(username):
     conn, cursor = None, None
     try:
         conn, cursor = __createConnection()
-        query = """
-            SELECT period 
-            FROM StudentSchedule 
-            JOIN Users ON Users.full_name = StudentSchedule.student 
-            WHERE Users.username = ?
-            """
-        cursor.execute(query, [user])
-        queryData = cursor.fetchall()
-        enrolledPeriods = [row[0] for row in queryData]
-        periods = list(range(1, MAX_PERIODS + 1)) 
-        currentMissingPeriods = [p for p in periods if p not in enrolledPeriods]
-        return currentMissingPeriods
+        cursor.execute("""
+            SELECT c.period 
+            FROM ClassStudents cs
+            JOIN Classes c ON cs.classId = c.id
+            WHERE cs.student = (
+                SELECT full_name FROM Users WHERE username = ?
+            )
+        """, [username])
+        taken = {row[0] for row in cursor.fetchall()}
+        return [p for p in range(1, MAX_PERIODS+1) if p not in taken]
     except Exception as e:
-        logging.error(f"Error fetching students in class: {e}")
-        return jsonify({"error": serverError}), 500
+        logging.error(f"Period check error: {e}")
+        return []
     finally:
         __closeConnection(conn, cursor)
 
@@ -673,6 +739,14 @@ def __checkRole(username, roleCheck):
         return None
     finally:
         __closeConnection(conn, cursor)
+
+@app.route("/changePassword", methods=["POST"])
+def changePassword():
+
+@app.route("/forgotPassword", methods=["POST"])
+def forgotPassword():
+
+
 
 if __name__ == "__main__":
     app.run(debug=True)
