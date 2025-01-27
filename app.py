@@ -977,11 +977,6 @@ def changePassword():
     finally:
         if conn and cursor:
             __closeConnection(conn, cursor)
-    
-
-#TODO: maybe once I finish the rest as I want to make it go to a valid email or something
-#@app.route("/forgotPassword", methods=["POST"])
-#def forgotPassword():
 
 if __name__ == "__main__":
     app.run(debug=True)
