@@ -3,6 +3,7 @@ import sqlite3
 import os
 import hashlib
 import logging
+import secrets
 
 serverError = "An Internal Server Error Has Occurred"
 logInError = "Username or Password was incorrect"
@@ -89,13 +90,99 @@ def login():
 
 #TODO: Admin Endpoints
 
-#TODO: Write this
+#TODO:
 @app.route("/addNewClass", methods=["POST"])
 def addNewClass():
+    data = request.json
+    username = data.get("username")
+    if not username or not __checkRole(username, "admin"):
+        return jsonify({"error": "Permission not granted"}), 400
+    
+    # Extract required parameters
+    className = data.get("classname")
+    description = data.get("description")
+    teacher = data.get("teacher")  # Must be the teacher's name
+    capacity = data.get("capacity")
+    period = data.get("period")
+    
+    # Validate all required parameters
+    if not className or not description or not teacher or not capacity or not period:
+        return jsonify({"error": "Missing parameters"}), 400
 
-@app.route("/deleteClass", methods=["POST"])
+    conn, cursor = None, None  # Initialize connection and cursor
+    try:
+        conn, cursor = __createConnection()
+
+        # Check if the teacher is free for the given period
+        teacherQuery = """
+            SELECT 1
+            FROM Classes
+            WHERE teacher = ? AND period = ?
+        """
+        cursor.execute(teacherQuery, [teacher, period])
+        if cursor.fetchone():
+            return jsonify({"error": "Teacher is already assigned for that period"}), 400
+
+        # Add the new class to the database
+        newClassQuery = """
+            INSERT INTO Classes (className, classDescription, capacity, teacher, period) 
+            VALUES (?, ?, ?, ?, ?)
+        """
+        cursor.execute(newClassQuery, [className, description, capacity, teacher, period])
+        conn.commit()
+        return jsonify({"message": "Class added successfully"}), 200
+    except Exception as e:
+        if conn:
+            conn.rollback()  # Rollback transaction on error
+        logging.error(f"Error during class addition: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn and cursor:
+            __closeConnection(conn, cursor)
+        
+#TODO:
+@app.route("/deleteClass", methods=["DELETE"])
 def deleteClass():
-
+    data = request.json
+    username = data.get("username")
+    if not username or not __checkRole(username, "admin"):
+        return jsonify({"error": "permission not granted"}), 400
+    
+    classId = data.get("classId")
+    if not classId:
+        return jsonify({"error": "missing parameter"}), 400
+    
+    conn, cursor = None, None  # Initialize connection and cursor for safety
+    try:
+        # Check if the classId exists
+        conn, cursor = __createConnection()
+        classIdQuery = """
+            SELECT 1
+            FROM Classes
+            WHERE id = ?
+        """
+        cursor.execute(classIdQuery, [classId])
+        classIdResult = cursor.fetchone()
+        if not classIdResult:
+            return jsonify({"error": "class does not exist"}), 400
+        
+        # Delete the class
+        deleteQuery = """
+            DELETE FROM Classes
+            WHERE id = ?
+        """
+        cursor.execute(deleteQuery, [classId])
+        conn.commit()
+        return jsonify({"message": "class deleted successfully"})
+    except Exception as e:
+        if conn:
+            conn.rollback()  # Roll back the transaction if an error occurs
+        logging.error(f"Error during class deletion: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn and cursor:
+            __closeConnection(conn, cursor)
+        
 
 @app.route("/acceptClassDrop", methods=["POST"])
 def acceptClassDrop():
@@ -209,17 +296,116 @@ def acceptAddClass():
         __closeConnection(conn, cursor)
 
 #todo decline add
-@app.route("/declineAdd", methods=["POST"])
+#TODO:
+@app.route("/declineAdd", methods=["DELETE"])
 def declineAdd():
-
+    data = request.json
+    username = data.get("username")
+    if not username or not __checkRole(username, "admin"):
+        return jsonify({"error": "permission not granted"})
+    addId = data.get("addId")
+    classId = data.get("classId")
+    student = data.get("student") #full name
+    if not addId and not classId and not student:
+        return jsonify({"error": "missing parameter"}), 400
+    try:
+        conn, cursor = __createConnection()
+        checkAddId = """
+            SELECT 1
+            FROM AddRequests
+            WHERE id = ?
+        """
+        cursor.execute(checkAddId, [addId])
+        if not cursor.fetchone():
+            return jsonify({"error": "drop id is not valid"}), 400
+        #lets verify the student exists now
+        studentQuery = """
+            SELECT 1
+            FROM Users
+            WHERE full_name = ?
+        """
+        cursor.execute(studentQuery, [student])
+        if not cursor.fetchone():
+            return jsonify({"error": "student doesnt exist"}), 400
+        #now lets verify that the classId exists
+        classIdQuery = """
+            SELECT 1
+            FROM Classes
+            WHERE id = ?
+        """
+        cursor.execute(classIdQuery, [classId])
+        if not cursor.fetchone():
+            return jsonify({"error": "class does not exist"}), 400
+        #Delete the student from the AddRequests and thats all
+        declineQuery = """
+            DELETE FROM AddRequests
+            WHERE id = ?
+        """
+        cursor.execute(declineQuery, [addId])
+        conn.commit()
+        return jsonify({"message": "request removed"}), 200
+    except Exception as e:
+        logging.error(f"Add error: {e}")
+        conn.rollback() if conn else None
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 #todo decline drop
+#TODO:
 @app.route("/declineDrop", methods=["POST"])
 def declineDrop():
-
-#todo add role
-@app.route("/addRole", methods=["POST"])
-def addRole():
+    data = request.json
+    username = data.get("username")
+    if not username or not __checkRole(username, "admin"):
+        return jsonify({"error": "permission not granted"})
+    dropId = data.get("dropId")
+    classId = data.get("classId")
+    student = data.get("student") #full name
+    if not dropId and not classId and not student:
+        return jsonify({"error": "missing parameter"}), 400
+    try:
+        conn, cursor = __createConnection()
+        checkDropId = """
+            SELECT 1
+            FROM DropRequests
+            WHERE id = ?
+        """
+        cursor.execute(checkDropId, [dropId])
+        if not cursor.fetchone():
+            return jsonify({"error": "drop id is not valid"}), 400
+        #lets verify the student exists now
+        studentQuery = """
+            SELECT 1
+            FROM Users
+            WHERE full_name = ?
+        """
+        cursor.execute(studentQuery, [student])
+        if not cursor.fetchone():
+            return jsonify({"error": "student doesnt exist"}), 400
+        #now lets verify that the classId exists
+        classIdQuery = """
+            SELECT 1
+            FROM Classes
+            WHERE id = ?
+        """
+        cursor.execute(classIdQuery, [classId])
+        if not cursor.fetchone():
+            return jsonify({"error": "class does not exist"}), 400
+        #Delete the student from the AddRequests and thats all
+        declineQuery = """
+            DELETE FROM DropRequests
+            WHERE id = ?
+        """
+        cursor.execute(declineQuery, [dropId])
+        conn.commit()
+        return jsonify({"message": "request removed"}), 200
+    except Exception as e:
+        logging.error(f"Add error: {e}")
+        conn.rollback() if conn else None
+        return jsonify({"error": serverError}), 500
+    finally:
+        __closeConnection(conn, cursor)
 
 # Create new user (for admin)
 @app.route("/createUser", methods=["POST"])
@@ -536,7 +722,6 @@ def studentClassInfo():
     finally:
         __closeConnection(conn, cursor)
 
-#TODO send drop request
 @app.route("/sendDropRequest", methods=["POST"])
 def sendDropRequest():
     conn, cursor = None, None
@@ -740,13 +925,63 @@ def __checkRole(username, roleCheck):
     finally:
         __closeConnection(conn, cursor)
 
+#TODO:
 @app.route("/changePassword", methods=["POST"])
 def changePassword():
+    data = request.json
+    username = data.get('username') #username
+    oldPassword = data.get("oldPassword")
+    newPassword = data.get("newPassword")
+    if not username and not oldPassword and not newPassword:
+        return jsonify({"error": "missing parameter"}), 400
+    try:
+        conn, cursor = __createConnection()
+        #check if user exists
+        userQuery = """
+            SELECT 1
+            FROM Users
+            WHERE username = ?
+        """
+        cursor.execute(userQuery, [username])
+        if not cursor.fetchone():
+            return jsonify({"error", "user doesnt exist"}), 400
+        #verify that oldpassword is valid
+        passwordQuery = """
+            SELECT salt, hash
+            FROM Users
+            WHERE username = ?
+        """
+        cursor.execute(passwordQuery, [username])
+        salt, storedHash = cursor.fetchone()
+        tempHash = __hashPassword(oldPassword, salt)
+        if not secrets.compare_digest(tempHash, storedHash):
+            return jsonify({"error": "invalid old password"}), 400
+        newSalt = __generateSalt()
+        newHash = __hashPassword(newPassword, newSalt)
+        updatePasswordQuery = """
+            UPDATE Users
+            SET salt = ?, hash = ?
+            WHERE username = ?
+        """
+        cursor.execute(updatePasswordQuery, [newSalt, newHash, username])
+        conn.commit()
 
-@app.route("/forgotPassword", methods=["POST"])
-def forgotPassword():
+        return jsonify({"message": "password changed successfully"}), 200
 
+    except Exception as e:
+        if conn:
+            conn.rollback()
+        logging.error(f"Error during password change: {e}")
+        return jsonify({"error": str(e)}), 500
 
+    finally:
+        if conn and cursor:
+            __closeConnection(conn, cursor)
+    
+
+#TODO: maybe once I finish the rest as I want to make it go to a valid email or something
+#@app.route("/forgotPassword", methods=["POST"])
+#def forgotPassword():
 
 if __name__ == "__main__":
     app.run(debug=True)
