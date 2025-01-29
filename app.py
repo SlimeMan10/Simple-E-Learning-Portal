@@ -39,6 +39,7 @@ def __closeConnection(conn, cursor):
         conn.close()
 
 # Login route
+#notes: use json raw to pass in
 @app.route("/login", methods=["POST"])
 def login():
     conn, cursor = None, None
@@ -47,18 +48,26 @@ def login():
         data = request.json
         username = data.get("username")
         password = data.get("password")
-        user_type = data.get("type")
+        user_type = data.get("role")
+
+        if not isinstance(username, str) or not isinstance(password, str) or not isinstance(user_type, str):
+            return jsonify({"error": "wrong parameter types"})
 
         # Validate inputs
-        if not username:
-            return jsonify({"error": "Username is required"}), 400
-        if not password:
-            return jsonify({"error": "Password is required"}), 400
-        if not user_type:
-            return jsonify({"error": "Type is required"}), 400
-
+        if not all ([username, password, user_type]):
+            return jsonify({"error": "Missing Parameter"}), 400
         # Connect to the database
         conn, cursor = __createConnection()
+        user_type = user_type.capitalize()
+        #verify role
+        roleQuery = """
+            SELECT 1
+            FROM Roles
+            WHERE role = ?
+        """
+        cursor.execute(roleQuery, [user_type])
+        if not cursor.fetchone():
+            return jsonify({"error": "role doesnt exist"}), 400
 
         # Query the database for the user's salt and hashed password
         query = "SELECT salt, hash FROM Users WHERE username = ?"
@@ -88,13 +97,14 @@ def login():
     finally:
         __closeConnection(conn, cursor)
 
-#TODO: Admin Endpoints
+#TODO Admin Endpoints
 
-#TODO:
 @app.route("/addNewClass", methods=["POST"])
 def addNewClass():
     data = request.json
     username = data.get("username")
+    if not isinstance(username, str):
+        return jsonify({"error": "parameter is wrong type"})
     if not username or not __checkRole(username, "admin"):
         return jsonify({"error": "Permission not granted"}), 400
     
@@ -104,9 +114,12 @@ def addNewClass():
     teacher = data.get("teacher")  # Must be the teacher's name
     capacity = data.get("capacity")
     period = data.get("period")
+
+    if not isinstance(className, str) or not isinstance(description, str) or not isinstance(teacher, str) or not isinstance(capacity, int) or not isinstance(period, int):
+        return jsonify({"error": "parameters are of wrong types"})
     
     # Validate all required parameters
-    if not className or not description or not teacher or not capacity or not period:
+    if not all([className, description, teacher, capacity, period]):
         return jsonify({"error": "Missing parameters"}), 400
 
     conn, cursor = None, None  # Initialize connection and cursor
@@ -139,18 +152,82 @@ def addNewClass():
     finally:
         if conn and cursor:
             __closeConnection(conn, cursor)
-        
-#TODO:
+
+#TODO: TEST
+@app.route("/addStudentToClass", methods=["POST"])
+def addStudentToClass():
+    data = request.json
+    username = data.get("username")
+    student = data.get("student")
+    classId = data.get("classId")
+    if not all([isinstance(username, str), isinstance(student, str), isinstance(classId, int)]):
+        return jsonify({"error": "parameter is wrong type"}), 400
+    if not all([username, student, classId]):
+        return jsonify({"error", "missing parameter"}), 400
+    if not __checkRole(username, "admin"):
+        return jsonify({"error", "Permission Denied"}), 400
+    try:
+        conn, cursor = __createConnection()
+        #verify if the classId exists
+        classIdQuery = """
+            SELECT period, capacity
+            FROM Classes
+            WHERE classId = ?
+        """
+        cursor.execute(classIdQuery, [classId])
+        period, capacity = cursor.fetchone()[0]
+        if not period:
+            return jsonify({"error", "class id doesn't exist"}), 400
+        if capacity <= 0:
+            return jsonify({"error": "no more space in class"}), 400
+        #check if the student exists
+        studentQuery = """
+            SELECT 1
+            FROM Users
+            WHERE full_name = ?
+        """
+        cursor.execute(studentQuery, [student])
+        if not cursor.fetchone():
+            return jsonify({"error", "Student doesn't exist"}), 400
+        #check if the students schedule fits it
+        missingPeriods = __getMissingPeriods()
+        if period not in missingPeriods:
+            return jsonify({"error":"class doesnt fit schedule"}), 400
+        #now lets insert the class into the students schedule
+        insertClassQuery = """
+            INSERT INTO StudentSchedule (student, classId, period) VALUES (?, ?, ?)
+        """
+        cursor.execute(insertClassQuery, [student, classId, period])
+        #update the class capacity
+        capacityQuery = """
+            UPDATE Classes
+            SET capacity = capacity - 1
+            WHERE classId = ?
+        """
+        cursor.execute(capacityQuery, [classId])
+        conn.commit()
+        return jsonify({"status": "class added successfully"}), 200
+    except Exception as e:
+        if conn:
+            conn.rollback()  # Roll back the transaction if an error occurs
+        logging.error(f"Error during class deletion: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn and cursor:
+            __closeConnection(conn, cursor)
+
+#TODO: check
 @app.route("/deleteClass", methods=["DELETE"])
 def deleteClass():
     data = request.json
     username = data.get("username")
-    if not username or not __checkRole(username, "admin"):
-        return jsonify({"error": "permission not granted"}), 400
-    
     classId = data.get("classId")
-    if not classId:
+    if not all([isinstance(username, str), isinstance(classId, int)]):
+        return jsonify({"error": "parameters are wrong types"})
+    if not all([username, classId]):
         return jsonify({"error": "missing parameter"}), 400
+    if not __checkRole(username, "admin"):
+        return jsonify({"error": "permission not granted"}), 400
     
     conn, cursor = None, None  # Initialize connection and cursor for safety
     try:
@@ -183,7 +260,7 @@ def deleteClass():
         if conn and cursor:
             __closeConnection(conn, cursor)
         
-
+#TODO: check
 @app.route("/acceptClassDrop", methods=["POST"])
 def acceptClassDrop():
     conn, cursor = None, None
@@ -192,7 +269,8 @@ def acceptClassDrop():
         username = data.get("username")
         studentName = data.get("studentName")
         classId = data.get("classId")
-
+        if not isinstance(username, str) or not isinstance(studentName, str) or not isinstance(classId, int):
+            return jsonify({"error": "missing parameter"})
         if not all([username, studentName, classId]):
             return jsonify({"error": "Missing required fields"}), 400
 
@@ -240,7 +318,7 @@ def acceptClassDrop():
     finally:
         __closeConnection(conn, cursor)
 
-#todo accept add
+#TODO: check
 @app.route("/acceptAddClass", methods=["POST"])
 def acceptAddClass():
     conn, cursor = None, None
@@ -249,6 +327,13 @@ def acceptAddClass():
         username = data.get("username")
         studentName = data.get("student_name")
         classId = data.get("class_id")
+
+        if not all ([
+            isinstance(username, str),
+            isinstance(studentName, str),
+            isinstance(classId, int)
+        ]):
+            return jsonify({"error": "parameter is not the proper type"}), 400
 
         if not all([username, studentName, classId]):
             return jsonify({"error": "Missing required fields"}), 400
@@ -296,7 +381,7 @@ def acceptAddClass():
         __closeConnection(conn, cursor)
 
 #todo decline add
-#TODO:
+#TODO: check
 @app.route("/declineAdd", methods=["DELETE"])
 def declineAdd():
     data = request.json
@@ -306,7 +391,13 @@ def declineAdd():
     addId = data.get("addId")
     classId = data.get("classId")
     student = data.get("student") #full name
-    if not addId and not classId and not student:
+    if not all([
+        isinstance(addId, int),
+        isinstance(classId, int),
+        isinstance(student, str)
+    ]):
+        return jsonify({"error": "parameter not proper type"}), 400
+    if not all([addId, classId, student]):
         return jsonify({"error": "missing parameter"}), 400
     try:
         conn, cursor = __createConnection()
@@ -352,17 +443,24 @@ def declineAdd():
         __closeConnection(conn, cursor)
 
 #todo decline drop
-#TODO:
+#TODO: check
 @app.route("/declineDrop", methods=["POST"])
 def declineDrop():
     data = request.json
     username = data.get("username")
-    if not username or not __checkRole(username, "admin"):
-        return jsonify({"error": "permission not granted"})
     dropId = data.get("dropId")
     classId = data.get("classId")
     student = data.get("student") #full name
-    if not dropId and not classId and not student:
+    if not all([
+        isinstance(username, str),
+        isinstance(dropId, int),
+        isinstance(classId, int),
+        isinstance(student, str)
+    ]):
+        return jsonify({"error": "parameter is wrong type"}), 400
+    if not username or not __checkRole(username, "admin"):
+        return jsonify({"error": "permission not granted"})
+    if not all([dropId, classId, student]):
         return jsonify({"error": "missing parameter"}), 400
     try:
         conn, cursor = __createConnection()
@@ -408,27 +506,21 @@ def declineDrop():
         __closeConnection(conn, cursor)
 
 # Create new user (for admin)
+#TODO: check
 @app.route("/createUser", methods=["POST"])
 def create_user():
     conn, cursor = None, None
     try:
         data = request.json
         adminUsername = data.get("username")
-        if not adminUsername:
-            return jsonify({"error": "no username provides"}), 400
-        if not __checkRole(adminUsername, "admin"):
-            return jsonify({"error": "Permission not granted"}), 400
-        # Now we can create the new user
         newUsername = data.get("newUsername")
         userFullName = data.get("full_name")
         newPassword = data.get("newPassword")
         role = data.get("role")
-        if not newUsername:
-            return jsonify({"error": "New username is required"}), 400
-        if not userFullName:
-            return jsonify({"error": "Users name is required"}), 400
-        if not newPassword:
-            return jsonify({"error": "New password is required"}), 400
+        if not all([adminUsername, newUsername, userFullName, newPassword, role]):
+            return jsonify({"error": "parameter is wrong type"}), 400
+        if not __checkRole(adminUsername, "admin"):
+            return jsonify({"error": "no username provides"}), 400
 
         # Validate the role
         if role not in ["admin", "student", "teacher"]:
@@ -450,6 +542,7 @@ def create_user():
     finally:
         __closeConnection(conn, cursor)
 
+#TODO: check
 @app.route("/deleteuser", methods=["DELETE"])
 def delete():
     conn, cursor = None, None
@@ -457,14 +550,11 @@ def delete():
         conn, cursor = __createConnection()
         data = request.json
         adminUsername = data.get("adminUsername")
-        if not adminUsername:
-            return jsonify({"error": "Admin username is required"}), 400
-        adminUser = __checkRole(adminUsername, "admin")
-        if not adminUser:
-            return jsonify({"error": "Admin authentication failed"}), 401
         username = data.get("username")
-        if not username:
-            return jsonify({"error": "Username is required"}), 400
+        if not all([adminUsername, username]):
+            return jsonify({"error": "parameter missing"}), 400
+        if not __checkRole(adminUsername, "admin"):
+            return jsonify({"error": "permission not granted"}), 400
         query = "DELETE FROM Users WHERE username = ?"
         cursor.execute(query, [username])
         conn.commit()
@@ -475,6 +565,7 @@ def delete():
     finally:
         __closeConnection(conn, cursor)
 
+#TODO: check
 @app.route("/getDropClassRequest", methods=["GET"])
 def get_drop_class_request():
     conn, cursor = None, None
@@ -517,6 +608,7 @@ def get_drop_class_request():
     finally:
         __closeConnection(conn, cursor)
 
+#TODO: check
 @app.route("/getAddClassRequest", methods=["GET"])
 def get_add_class_request():
     conn, cursor = None, None
@@ -559,8 +651,9 @@ def get_add_class_request():
     finally:
         __closeConnection(conn, cursor)
 
-#TODO: Teacher End Points
+#todo: Teacher End Points
 
+#TODO: check
 @app.route("/getAllClassesTeacher", methods=["GET"])
 def get_all_classes_teacher():
     conn, cursor = None, None
@@ -598,6 +691,7 @@ def get_all_classes_teacher():
         __closeConnection(conn, cursor)
 
 #must pass in username (has to be stored) and id (get when they click on the title)
+#TODO: check
 @app.route("/getStudentsInClass", methods=["GET"])
 def get_students_in_class():
     conn, cursor = None, None
@@ -605,7 +699,7 @@ def get_students_in_class():
         currentUser = request.args.get("username")
         classId = request.args.get("id")
         
-        if not currentUser or not classId:
+        if not all([currentUser, classId]):
             return jsonify({"error": "Missing parameters"}), 400
 
         if not __checkRole(currentUser, "teacher"):
@@ -637,59 +731,21 @@ def get_students_in_class():
     finally:
         __closeConnection(conn, cursor)
 
-#TODO: Student end points
+#todo: Student end points
 
-#TODO make endpoint to view classes taken (view all classes)
 #can also be used to get all classes to drop
-@app.route("/studentGetAvailableClasses", methods=["GET"])
-def studentGetAvailableClasses():
-    conn, cursor = None, None
-    try:
-        username = request.args.get("username")
-        if not username or not __checkRole(username, "student"):
-            return jsonify({"error": "Authentication failed"}), 403
-
-        missing_periods = __getMissingPeriods(username)
-        if not missing_periods:
-            return jsonify({"data": []}), 200
-
-        conn, cursor = __createConnection()
-        cursor.execute(f"""
-            SELECT className, classDescription, teacher 
-            FROM Classes
-            WHERE capacity > 0 AND period IN ({','.join(['?']*len(missing_periods))})
-        """, missing_periods)
-
-        return jsonify({
-            "data": [{
-                "name": row[0],
-                "description": row[1],
-                "teacher": row[2]
-            } for row in cursor.fetchall()]
-        }), 200
-
-    except Exception as e:
-        logging.error(f"Available classes error: {e}")
-        return jsonify({"error": serverError}), 500
-    finally:
-        __closeConnection(conn, cursor)
-
-@app.route("/studentClassInfo", methods=["GET"])
+#TODO: check
+@app.route("/getStudentClassInfo", methods=["GET"])
 def studentClassInfo():
     data = request.args
     username = data.get("username")
-
+    classId = data.get("classId")
+    if not all([username, classId]):
+        return jsonify({"error", "missing parameter"}), 400
     # Check if logged in and correct role
-    if not username:
-        return jsonify({"error": "User not signed in"}), 400
     if not __checkRole(username, "student"):
         return jsonify({"error": "Permission not granted"}), 403
-
-    # Validate classId
-    classId = data.get("classId")
-    if not classId:
-        return jsonify({"error": "Class ID not provided"}), 400
-
+    
     conn, cursor = None, None
     try:
         # Connect to the database
@@ -722,6 +778,7 @@ def studentClassInfo():
     finally:
         __closeConnection(conn, cursor)
 
+#TODO: check
 @app.route("/sendDropRequest", methods=["POST"])
 def sendDropRequest():
     conn, cursor = None, None
@@ -730,7 +787,7 @@ def sendDropRequest():
         username = data.get("username")
         classId = data.get("classId")
 
-        if not username or not classId:
+        if not all([username, classId]):
             return jsonify({"error": "Missing required fields"}), 400
 
         if not __checkRole(username, "student"):
@@ -766,7 +823,7 @@ def sendDropRequest():
     finally:
         __closeConnection(conn, cursor)
 
-
+#TODO: check
 @app.route("/sendAddRequest", methods=["POST"])
 def studentAddRequest():
     conn, cursor = None, None
@@ -776,7 +833,7 @@ def studentAddRequest():
         # Validate input
         username = data.get('username')
         class_id = data.get("classId")
-        if not username or not class_id:
+        if not all([username, class_id]):
             return jsonify({"error": "Missing username or class ID"}), 400
 
         if not __checkRole(username, "student"):
@@ -857,11 +914,7 @@ def __getMissingPeriods(username):
     finally:
         __closeConnection(conn, cursor)
 
-#Method: Gets the classes available for the student that will fit their schedule
-#Exceptions: returns error codes if username is blank, not the right role, or a server error
-#Returns: returns a json but if all goes well it will return the class name, description, and teacher
-        #for all classes available to the student
-#Parameters: username - users username
+#TODO: check
 @app.route("/studentGetAvailableClasses", methods=["GET"])
 def studentGetAvailableClasses():
     conn, cursor = None, None
@@ -910,6 +963,7 @@ def studentGetAvailableClasses():
 def __checkRole(username, roleCheck):
     conn, cursor = None, None
     try:
+        username = username.capitalize()
         conn, cursor = __createConnection()
         query = "SELECT role FROM Users WHERE username = ?"
         cursor.execute(query, [username])
@@ -925,14 +979,14 @@ def __checkRole(username, roleCheck):
     finally:
         __closeConnection(conn, cursor)
 
-#TODO:
+#TODO: check
 @app.route("/changePassword", methods=["POST"])
 def changePassword():
     data = request.json
     username = data.get('username') #username
     oldPassword = data.get("oldPassword")
     newPassword = data.get("newPassword")
-    if not username and not oldPassword and not newPassword:
+    if not all([username, oldPassword, newPassword]):
         return jsonify({"error": "missing parameter"}), 400
     try:
         conn, cursor = __createConnection()

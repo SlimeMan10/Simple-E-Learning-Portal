@@ -11,6 +11,6 @@
         "esModuleInterop": true,          // Allow interoperation with CommonJS modules
         "forceConsistentCasingInFileNames": true // Ensure consistent file naming
     },
-    "include": ["src/**/*.ts"],            // Include all TypeScript files in the "src" folder
+    "include": ["./src/**/*.ts"],            // Include all TypeScript files in the "src" folder
     "exclude": ["node_modules"]            // Exclude dependencies
 }
