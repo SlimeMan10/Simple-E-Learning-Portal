@@ -38,6 +38,43 @@ def __closeConnection(conn, cursor):
     if conn:
         conn.close()
 
+def __checkRole(username, roleCheck):
+    conn, cursor = None, None
+    try:
+        roleCheck = roleCheck.lower()
+        conn, cursor = __createConnection()
+        query = "SELECT 1 FROM Users WHERE username = ? and role = ?"
+        cursor.execute(query, [username, roleCheck])
+        user = cursor.fetchone()
+        if not user:
+            return None
+        return user
+    except Exception as e:
+        return None
+    finally:
+        __closeConnection(conn, cursor)
+
+#FIXME: FIX ME
+def __getMissingPeriods(username):
+    conn, cursor = None, None
+    try:
+        conn, cursor = __createConnection()
+        cursor.execute("""
+            SELECT c.period 
+            FROM ClassStudents cs
+            JOIN Classes c ON cs.classId = c.id
+            WHERE cs.student = (
+                SELECT full_name FROM Users WHERE username = ?
+            )
+        """, [username])
+        taken = {row[0] for row in cursor.fetchall()}
+        return [p for p in range(1, MAX_PERIODS+1) if p not in taken]
+    except Exception as e:
+        logging.error(f"Period check error: {e}")
+        return None
+    finally:
+        __closeConnection(conn, cursor)
+
 # Login route
 #notes: use json raw to pass in
 @app.route("/login", methods=["POST"])
@@ -56,19 +93,10 @@ def login():
         # Validate inputs
         if not all ([username, password, user_type]):
             return jsonify({"error": "Missing Parameter"}), 400
+        if not __checkRole(username, user_type):
+            return jsonify({"error": "role doesnt match user"}), 400
         # Connect to the database
         conn, cursor = __createConnection()
-        user_type = user_type.capitalize()
-        #verify role
-        roleQuery = """
-            SELECT 1
-            FROM Roles
-            WHERE role = ?
-        """
-        cursor.execute(roleQuery, [user_type])
-        if not cursor.fetchone():
-            return jsonify({"error": "role doesnt exist"}), 400
-
         # Query the database for the user's salt and hashed password
         query = "SELECT salt, hash FROM Users WHERE username = ?"
         cursor.execute(query, [username])
@@ -125,7 +153,15 @@ def addNewClass():
     conn, cursor = None, None  # Initialize connection and cursor
     try:
         conn, cursor = __createConnection()
-
+        #check if teacher exists
+        teacherExistsQuery = """
+            SELECT 1
+            FROM Users
+            WHERE full_name = ? and role = "teacher"
+        """
+        cursor.execute(teacherExistsQuery, [teacher])
+        if not cursor.fetchone():
+            return jsonify({"error": "Teacher does not exist"}), 400
         # Check if the teacher is free for the given period
         teacherQuery = """
             SELECT 1
@@ -172,7 +208,7 @@ def addStudentToClass():
         classIdQuery = """
             SELECT period, capacity
             FROM Classes
-            WHERE classId = ?
+            WHERE id = ?
         """
         cursor.execute(classIdQuery, [classId])
         period, capacity = cursor.fetchone()[0]
@@ -191,8 +227,8 @@ def addStudentToClass():
             return jsonify({"error", "Student doesn't exist"}), 400
         #check if the students schedule fits it
         missingPeriods = __getMissingPeriods()
-        if period not in missingPeriods:
-            return jsonify({"error":"class doesnt fit schedule"}), 400
+        if period not in missingPeriods:  #FIXME: get missing periods is probably broken
+            return jsonify({"error":"class doesn't fit schedule"}), 400
         #now lets insert the class into the students schedule
         insertClassQuery = """
             INSERT INTO StudentSchedule (student, classId, period) VALUES (?, ?, ?)
@@ -210,7 +246,7 @@ def addStudentToClass():
     except Exception as e:
         if conn:
             conn.rollback()  # Roll back the transaction if an error occurs
-        logging.error(f"Error during class deletion: {e}")
+        logging.error(f"Server Error: {e}")
         return jsonify({"error": str(e)}), 500
     finally:
         if conn and cursor:
@@ -417,7 +453,7 @@ def declineAdd():
         """
         cursor.execute(studentQuery, [student])
         if not cursor.fetchone():
-            return jsonify({"error": "student doesnt exist"}), 400
+            return jsonify({"error": "student doesn't exist"}), 400
         #now lets verify that the classId exists
         classIdQuery = """
             SELECT 1
@@ -480,7 +516,7 @@ def declineDrop():
         """
         cursor.execute(studentQuery, [student])
         if not cursor.fetchone():
-            return jsonify({"error": "student doesnt exist"}), 400
+            return jsonify({"error": "student doesn't exist"}), 400
         #now lets verify that the classId exists
         classIdQuery = """
             SELECT 1
@@ -520,7 +556,7 @@ def create_user():
         if not all([adminUsername, newUsername, userFullName, newPassword, role]):
             return jsonify({"error": "parameter is wrong type"}), 400
         if not __checkRole(adminUsername, "admin"):
-            return jsonify({"error": "no username provides"}), 400
+            return jsonify({"error": "Permission not granted"}), 400
 
         # Validate the role
         if role not in ["admin", "student", "teacher"]:
@@ -894,26 +930,6 @@ def studentAddRequest():
     finally:
         __closeConnection(conn, cursor)
 
-def __getMissingPeriods(username):
-    conn, cursor = None, None
-    try:
-        conn, cursor = __createConnection()
-        cursor.execute("""
-            SELECT c.period 
-            FROM ClassStudents cs
-            JOIN Classes c ON cs.classId = c.id
-            WHERE cs.student = (
-                SELECT full_name FROM Users WHERE username = ?
-            )
-        """, [username])
-        taken = {row[0] for row in cursor.fetchall()}
-        return [p for p in range(1, MAX_PERIODS+1) if p not in taken]
-    except Exception as e:
-        logging.error(f"Period check error: {e}")
-        return []
-    finally:
-        __closeConnection(conn, cursor)
-
 #TODO: check
 @app.route("/studentGetAvailableClasses", methods=["GET"])
 def studentGetAvailableClasses():
@@ -960,25 +976,6 @@ def studentGetAvailableClasses():
     finally:
         __closeConnection(conn, cursor)
 
-def __checkRole(username, roleCheck):
-    conn, cursor = None, None
-    try:
-        username = username.capitalize()
-        conn, cursor = __createConnection()
-        query = "SELECT role FROM Users WHERE username = ?"
-        cursor.execute(query, [username])
-        user = cursor.fetchone()
-        if not user:
-            return None
-        role = user[0]
-        if role == roleCheck:
-            return user
-        return None
-    except Exception as e:
-        return None
-    finally:
-        __closeConnection(conn, cursor)
-
 #TODO: check
 @app.route("/changePassword", methods=["POST"])
 def changePassword():
@@ -998,8 +995,8 @@ def changePassword():
         """
         cursor.execute(userQuery, [username])
         if not cursor.fetchone():
-            return jsonify({"error", "user doesnt exist"}), 400
-        #verify that oldpassword is valid
+            return jsonify({"error", "user doesn't exist"}), 400
+        #verify that old password is valid
         passwordQuery = """
             SELECT salt, hash
             FROM Users
